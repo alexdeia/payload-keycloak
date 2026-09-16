@@ -18,7 +18,11 @@ export default defineConfig(() => {
     ],
     test: {
       environment: 'node',
-      hookTimeout: 30_000,
+      // One in-memory MongoDB for the whole run, started before any worker forks.
+      globalSetup: ['./dev/helpers/globalSetup.ts'],
+      hookTimeout: 60_000,
+      // e2e.spec.ts belongs to Playwright.
+      include: ['dev/**/*.int.spec.ts'],
       testTimeout: 30_000,
     },
   }

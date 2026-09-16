@@ -22,9 +22,6 @@
       "payload-keycloak": [
         "../src/index.ts"
       ],
-      "payload-keycloak/client": [
-        "../src/exports/client.ts"
-      ],
       "payload-keycloak/rsc": [
         "../src/exports/rsc.ts"
       ]

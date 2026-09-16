@@ -1,19 +1,25 @@
 {
   "name": "payload-keycloak",
   "version": "1.0.0",
-  "description": "A blank template to get started with Payload 3.0",
+  "description": "Keycloak SSO authentication for Payload CMS 3: OIDC auth strategy, admin login/logout, silent refresh and permission-based access control",
+  "keywords": [
+    "payload",
+    "payload-plugin",
+    "payloadcms",
+    "keycloak",
+    "oidc",
+    "sso",
+    "auth",
+    "pkce"
+  ],
   "license": "MIT",
+  "packageManager": "pnpm@10.33.4",
   "type": "module",
   "exports": {
     ".": {
       "import": "./src/index.ts",
       "types": "./src/index.ts",
       "default": "./src/index.ts"
-    },
-    "./client": {
-      "import": "./src/exports/client.ts",
-      "types": "./src/exports/client.ts",
-      "default": "./src/exports/client.ts"
     },
     "./rsc": {
       "import": "./src/exports/rsc.ts",
@@ -24,10 +30,12 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "README.md"
   ],
   "scripts": {
-    "build": "pnpm copyfiles && pnpm build:types && pnpm build:swc",
+    "build": "pnpm clean && pnpm copyfiles && pnpm build:types && pnpm build:swc",
     "build:swc": "swc ./src -d ./dist --config-file .swcrc --strip-leading-paths",
     "build:types": "tsc --outDir dist --rootDir ./src",
     "clean": "rimraf {dist,*.tsbuildinfo}",
@@ -40,9 +48,13 @@
     "generate:types": "pnpm dev:generate-types",
     "lint": "eslint",
     "lint:fix": "eslint ./src --fix",
+    "prepublishOnly": "pnpm build",
     "test": "pnpm test:int && pnpm test:e2e",
     "test:e2e": "playwright test",
-    "test:int": "vitest"
+    "test:int": "vitest run"
+  },
+  "dependencies": {
+    "jose": "^5.10.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
@@ -80,7 +92,10 @@
     "vitest": "4.0.18"
   },
   "peerDependencies": {
-    "payload": "^3.84.1"
+    "@payloadcms/ui": "^3.84.1",
+    "next": "^15.0.0 || ^16.0.0",
+    "payload": "^3.84.1",
+    "react": "^19.0.0"
   },
   "engines": {
     "node": "^18.20.2 || >=20.9.0",
@@ -92,11 +107,6 @@
         "import": "./dist/index.js",
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
-      },
-      "./client": {
-        "import": "./dist/exports/client.js",
-        "types": "./dist/exports/client.d.ts",
-        "default": "./dist/exports/client.js"
       },
       "./rsc": {
         "import": "./dist/exports/rsc.js",
@@ -113,7 +123,5 @@
       "esbuild",
       "unrs-resolver"
     ]
-  },
-  "registry": "https://registry.npmjs.org/",
-  "dependencies": {}
+  }
 }

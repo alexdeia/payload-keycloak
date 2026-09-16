@@ -1,14 +1,12 @@
 import { mongooseAdapter } from '@payloadcms/db-mongodb'
 import { lexicalEditor } from '@payloadcms/richtext-lexical'
-import { MongoMemoryReplSet } from 'mongodb-memory-server'
 import path from 'path'
 import { buildConfig } from 'payload'
-import { payloadKeycloak } from 'payload-keycloak'
+import { authenticated, can, keycloakAuth, withKeycloakAccess } from 'payload-keycloak'
 import sharp from 'sharp'
 import { fileURLToPath } from 'url'
 
 import { testEmailAdapter } from './helpers/testEmailAdapter.js'
-import { seed } from './seed.js'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
@@ -17,28 +15,34 @@ if (!process.env.ROOT_DIR) {
   process.env.ROOT_DIR = dirname
 }
 
-const buildConfigWithMemoryDB = async () => {
-  if (process.env.NODE_ENV === 'test') {
-    const memoryDB = await MongoMemoryReplSet.create({
-      replSet: {
-        count: 3,
-        dbName: 'payloadmemory',
-      },
-    })
+/** Rules applied to every collection but `users`, which keeps the ones it declares itself. */
+const rules = { read: authenticated, write: can('posts.edit') }
 
-    process.env.DATABASE_URL = `${memoryDB.getUri()}&retryWrites=true`
-  }
-
-  return buildConfig({
-    admin: {
-      importMap: {
-        baseDir: path.resolve(dirname),
-      },
+export default buildConfig({
+  admin: {
+    importMap: {
+      baseDir: path.resolve(dirname),
     },
-    collections: [
+    user: 'users',
+  },
+  collections: withKeycloakAccess(
+    [
+      {
+        slug: 'users',
+        access: {
+          admin: ({ req }) => Boolean(req.user),
+          create: () => false,
+          delete: () => false,
+          read: authenticated,
+          update: () => false,
+        },
+        // Rows are created by the keycloak strategy on first sign-in; the plugin adds the fields.
+        auth: true,
+        fields: [],
+      },
       {
         slug: 'posts',
-        fields: [],
+        fields: [{ name: 'title', type: 'text' }],
       },
       {
         slug: 'media',
@@ -48,28 +52,28 @@ const buildConfigWithMemoryDB = async () => {
         },
       },
     ],
-    db: mongooseAdapter({
-      ensureIndexes: true,
-      url: process.env.DATABASE_URL || '',
+    rules,
+    ['users'],
+  ),
+  db: mongooseAdapter({
+    ensureIndexes: true,
+    url: process.env.DATABASE_URL || '',
+  }),
+  editor: lexicalEditor(),
+  email: testEmailAdapter,
+  plugins: [
+    keycloakAuth({
+      basePath: process.env.BASE_PATH || '',
+      clientId: process.env.KEYCLOAK_CLIENT_ID || 'payload',
+      permissionsClaim: process.env.KEYCLOAK_PERMISSIONS_CLAIM || 'permissions',
+      realm: process.env.KEYCLOAK_REALM || 'payload',
+      serverURL: process.env.SERVER_URL || 'http://localhost:3000',
+      url: process.env.KEYCLOAK_URL || 'http://localhost:8080',
     }),
-    editor: lexicalEditor(),
-    email: testEmailAdapter,
-    onInit: async (payload) => {
-      await seed(payload)
-    },
-    plugins: [
-      payloadKeycloak({
-        collections: {
-          posts: true,
-        },
-      }),
-    ],
-    secret: process.env.PAYLOAD_SECRET || 'test-secret_key',
-    sharp,
-    typescript: {
-      outputFile: path.resolve(dirname, 'payload-types.ts'),
-    },
-  })
-}
-
-export default buildConfigWithMemoryDB()
+  ],
+  secret: process.env.PAYLOAD_SECRET || 'test-secret_key',
+  sharp,
+  typescript: {
+    outputFile: path.resolve(dirname, 'payload-types.ts'),
+  },
+})

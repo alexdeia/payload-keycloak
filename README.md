@@ -1,218 +1,172 @@
-# Payload Plugin Template
+# payload-keycloak
 
-A template repo to create a [Payload CMS](https://payloadcms.com) plugin.
+SSO-only authentication for [Payload CMS](https://payloadcms.com) 3 against Keycloak. No local
+users, no passwords, no extra auth framework — one dependency (`jose`) on top of the standard OIDC
+endpoints.
 
-Payload is built with a robust infrastructure intended to support Plugins with ease. This provides a simple, modular, and reusable way for developers to extend the core capabilities of Payload.
+> [!IMPORTANT]
+> 🤖 This package is largely AI-generated.
 
-To build your own Payload plugin, all you need is:
+## What it does
 
-- An understanding of the basic Payload concepts
-- And some JavaScript/Typescript experience
+- **Auth strategy `keycloak`** — verifies a Keycloak access token (JWKS + issuer) taken from
+  `Authorization: Bearer …` or from the httpOnly session cookie, fetches `/userinfo` (cached per
+  token) and attaches its permissions claim to `req.user`. Users are created on first sight by
+  `sub`; `keycloakSub`, `email` and `name` are added to your auth collection unless it already
+  declares them. A lost first-login create race is retried as a lookup, so parallel first requests
+  do not turn into a silent 403.
+- **Admin login** via Authorization Code + PKCE (S256) for a public client:
+  `GET /api/auth/login` → Keycloak → `GET /api/auth/callback` → cookies → back to `/admin`. The
+  `/admin/login` view redirects straight to Keycloak through a `beforeLogin` component.
+- **Silent refresh** — an expired access token in the cookie is refreshed with the refresh-token
+  cookie. `/api/users/me` reports the refresh token's `exp`, so Payload's inactivity timers follow
+  the Keycloak SSO session; `POST /api/users/refresh-token` and `/api/users/logout` are wired up
+  too. Bearer requests are never refreshed — the caller owns its own token.
+- **Logout** — the logout button goes to `GET /api/auth/logout`, which clears the cookies and hands
+  off to the Keycloak end-session endpoint with `id_token_hint`.
+- **Access helpers** — `authenticated`, `can('posts.edit')`, `withKeycloakAccess`,
+  `withKeycloakGlobalAccess`, `withAuth`, plus `permissionsOf(user)` for ad-hoc checks.
 
-## Background
+## Install
 
-Here is a short recap on how to integrate plugins with Payload, to learn more visit the [plugin overview page](https://payloadcms.com/docs/plugins/overview).
+```bash
+pnpm add payload-keycloak
+```
 
-### How to install a plugin
-
-To install any plugin, simply add it to your payload.config() in the Plugin array.
+## Usage
 
 ```ts
-import myPlugin from 'my-plugin'
+import { buildConfig } from 'payload'
+import {
+  authenticated,
+  can,
+  keycloakAuth,
+  withAuth,
+  withKeycloakAccess,
+} from 'payload-keycloak'
 
-export const config = buildConfig({
+const rules = { read: authenticated, write: can('posts.edit') }
+
+export default buildConfig({
+  admin: { user: 'users' },
+  collections: withKeycloakAccess([Users, Posts], rules, ['users']),
+  endpoints: [{ path: '/report', method: 'get', handler: withAuth(reportHandler) }],
   plugins: [
-    // You can pass options to the plugin
-    myPlugin({
-      enabled: true,
+    keycloakAuth({
+      url: process.env.KEYCLOAK_URL,           // https://sso.example.com
+      realm: process.env.KEYCLOAK_REALM,
+      clientId: process.env.KEYCLOAK_CLIENT_ID, // public client, PKCE S256
+      serverURL: process.env.SERVER_URL,        // https://app.example.com
+      basePath: process.env.BASE_PATH,          // '' | '/sub-path'
     }),
   ],
 })
 ```
 
-### Initialization
+The auth collection keeps its own `access`; the plugin only sets `auth.disableLocalStrategy`, adds
+the fields, the strategy and the `me` / `refresh` / `afterLogout` hooks.
 
-The initialization process goes in the following order:
+Run `payload generate:importmap` after adding the plugin — the admin login and logout components are
+resolved through your app's import map.
 
-1. Incoming config is validated
-2. **Plugins execute**
-3. Default options are integrated
-4. Sanitization cleans and validates data
-5. Final config gets initialized
+### Keycloak client
 
-## Building the Plugin
+Public client, Standard flow, PKCE `S256`, with:
 
-When you build a plugin, you are purely building a feature for your project and then abstracting it outside of the project.
+- redirect URI `{serverURL}{basePath}/api/auth/callback`
+- post-logout redirect URI `{serverURL}{basePath}/admin`
 
-### Template Files
+**Revoke Refresh Token must be OFF** — see [Limits](#limits-by-design).
 
-In the Payload [plugin template](https://github.com/payloadcms/payload/tree/3.x/templates/plugin), you will see a common file structure that is used across all plugins:
+### Permissions
 
-1. root folder
-2. /src folder
-3. /dev folder
+Permissions are read from a userinfo claim as nested booleans:
 
-#### Root
-
-In the root folder, you will see various files that relate to the configuration of the plugin. We set up our environment in a similar manner in Payload core and across other projects, so hopefully these will look familiar:
-
-- **README**.md\* - This contains instructions on how to use the template. When you are ready, update this to contain instructions on how to use your Plugin.
-- **package**.json\* - Contains necessary scripts and dependencies. Overwrite the metadata in this file to describe your Plugin.
-- .**eslint**.config.js - Eslint configuration for reporting on problematic patterns.
-- .**gitignore** - List specific untracked files to omit from Git.
-- .**prettierrc**.json - Configuration for Prettier code formatting.
-- **tsconfig**.json - Configures the compiler options for TypeScript
-- .**swcrc** - Configuration for SWC, a fast compiler that transpiles and bundles TypeScript.
-- **vitest**.config.js - Config file for Vitest, defining how tests are run and how modules are resolved
-
-**IMPORTANT\***: You will need to modify these files.
-
-#### Dev
-
-In the dev folder, you’ll find a basic payload project, created with `npx create-payload-app` and the blank template.
-
-**IMPORTANT**: Make a copy of the `.env.example` file and rename it to `.env`. Update the `DATABASE_URL` to match the database you are using and your plugin name. Update `PAYLOAD_SECRET` to a unique string.
-**You will not be able to run `pnpm/yarn dev` until you have created this `.env` file.**
-
-`myPlugin` has already been added to the `payload.config()` file in this project.
-
-```ts
-plugins: [
-  myPlugin({
-    collections: {
-      posts: true,
-    },
-  }),
-]
+```json
+{ "permissions": { "posts": { "edit": true } } }
 ```
 
-Later when you rename the plugin or add additional options, **make sure to update it here**.
+`can('posts.edit')` passes when that path is exactly `true`. Point `permissionsClaim` at whatever
+claim your realm populates; a user whose userinfo cannot be reached stays authenticated with empty
+permissions.
 
-You may wish to add collections or expand the test project depending on the purpose of your plugin. Just make sure to keep this dev environment as simplified as possible - users should be able to install your plugin without additional configuration required.
+## Options
 
-When you’re ready to start development, initiate the project with `pnpm/npm/yarn dev` and pull up [http://localhost:3000](http://localhost:3000) in your browser.
+| Option | Default | |
+|---|---|---|
+| `url`, `realm`, `clientId`, `serverURL` | required | missing one throws at config build |
+| `basePath` | `''` | Next.js `basePath` |
+| `usersSlug` | `'users'` | auth collection |
+| `scope` | `'openid'` | |
+| `allowedOrigins` | — | extra origins allowed to send the session cookie; `serverURL` is always allowed |
+| `permissionsClaim` | `'permissions'` | userinfo claim holding nested boolean permissions |
+| `userInfoTtl` | `300` | seconds |
+| `internalHosts` | — | `Host` values of trusted in-network callers that read without a token as a shared user with no permissions; requires the ingress to route by its public host only |
+| `messages` | English | admin UI texts |
+| `getKey` | remote JWKS | `JWTVerifyGetKey` override for tests |
+| `enabled` | `true` | |
 
-#### Src
+Cookie names follow Payload's `cookiePrefix`: `{prefix}-token` (access, the cookie Payload itself
+owns), `{prefix}-refresh`, `{prefix}-id-token`, and `{prefix}-oidc-login` during the login redirect.
+Their `domain` / `sameSite` / `secure` attributes come from the auth collection's `auth.cookies`, so
+the cookies this plugin writes and the ones Payload rewrites carry identical scope. `secure`
+defaults to whether `serverURL` is https.
 
-Now that we have our environment setup and we have a dev project ready to - it’s time to build the plugin!
+The plugin also forces `auth.removeTokenFromResponses`: the access token is a Keycloak credential
+for the whole realm, so it stays in the httpOnly cookie and never reaches the `me` or
+`refresh-token` JSON body.
 
-**index.ts**
+## Timeouts and caching
 
-The essence of a Payload plugin is simply to extend the payload config - and that is exactly what we are doing in this file.
+- `/userinfo` runs on every authenticated request and is aborted after 5 s; the token endpoint
+  (login, refresh) after 10 s.
+- A successful `/userinfo` is cached per token for `userInfoTtl`, capped by the token's own `exp`.
+- A failed `/userinfo` is cached for 15 s, but only a transport failure or a `5xx`. A `401` is never
+  cached, so a revoked session loses its permissions on the very next request. It does not lose the
+  session itself: verification is offline (JWKS, no introspection), so the access token keeps
+  verifying until its own `exp` and the `401` is swallowed exactly like an outage — still
+  authenticated, no permissions. Reads survive until the token expires and the refresh then fails.
+- Repeated refreshes with the same refresh token share one in-flight request for 60 s, which keeps
+  refresh-token rotation from invalidating a token two parallel requests are both spending.
 
-```ts
-export const myPlugin =
-  (pluginOptions: MyPluginConfig) =>
-  (config: Config): Config => {
-    // do cool stuff with the config here
+## Limits (by design)
 
-    return config
-  }
+- `aud` is not validated; gate access with permissions instead.
+- The userinfo cache (positive and negative) and refresh coalescing live in process memory — fine
+  for one replica.
+- Keycloak's **Revoke Refresh Token must be OFF**. Admin pages are server-rendered without
+  `canSetHeaders`, so a refresh that happens there cannot write the rotated cookies back and the
+  browser keeps re-sending the original refresh token; with rotation on, once the 60 s coalescing
+  window lapses the next render replays a spent token and bounces the user through Keycloak and
+  back — a flicker with lost form state, not a clean auth error. The coalescing window is
+  per-process, which is the other thing rotation would break at more than one replica.
+- Errors from the token endpoint surface with Keycloak's own HTTP status (`400` on an expired or
+  revoked refresh token). Payload returns the error `message` to the client for any status other
+  than `500`, so `message` carries the status only; Keycloak's response body is attached to
+  `KeycloakError.body` instead, which stays server-side and reaches the log.
+- A transport-level failure or timeout against the token endpoint carries no status and surfaces
+  as a plain `500`.
+- Every `*Url` serverProp the plugin passes to an admin component is **app-relative, without
+  `basePath`** — the component prepends it. `redirect()` from `next/navigation` prepends `basePath`
+  on its own, so only components rendering a plain anchor add it explicitly. Prepending it in both
+  places gives a doubled prefix that is invisible when `basePath` is empty; `dev/plugin.int.spec.ts`
+  pins the rule against a non-empty one.
+
+## Development
+
+The `dev/` folder is a Payload app that loads the plugin from `src/`.
+
+```bash
+cp dev/.env.example dev/.env
+pnpm install
+pnpm dev            # http://localhost:3000/admin
+pnpm test:int       # vitest, against an in-memory MongoDB and a fake IdP
+pnpm test:e2e       # playwright
 ```
 
-First, we receive the existing payload config along with any plugin options.
+`pnpm generate:importmap` regenerates `dev/app/(payload)/admin/importMap.js` after a component is
+added or renamed.
 
-From here, you can extend the config as you wish.
+## License
 
-Finally, you return the config and that is it!
-
-##### Spread Syntax
-
-Spread syntax (or the spread operator) is a feature in JavaScript that uses the dot notation **(...)** to spread elements from arrays, strings, or objects into various contexts.
-
-We are going to use spread syntax to allow us to add data to existing arrays without losing the existing data. It is crucial to spread the existing data correctly – else this can cause adverse behavior and conflicts with Payload config and other plugins.
-
-Let’s say you want to build a plugin that adds a new collection:
-
-```ts
-config.collections = [
-  ...(config.collections || []),
-  // Add additional collections here
-]
-```
-
-First we spread the `config.collections` to ensure that we don’t lose the existing collections, then you can add any additional collections just as you would in a regular payload config.
-
-This same logic is applied to other properties like admin, hooks, globals:
-
-```ts
-config.globals = [
-  ...(config.globals || []),
-  // Add additional globals here
-]
-
-config.hooks = {
-  ...(incomingConfig.hooks || {}),
-  // Add additional hooks here
-}
-```
-
-Some properties will be slightly different to extend, for instance the onInit property:
-
-```ts
-import { onInitExtension } from './onInitExtension' // example file
-
-config.onInit = async (payload) => {
-  if (incomingConfig.onInit) await incomingConfig.onInit(payload)
-  // Add additional onInit code by defining an onInitExtension function
-  onInitExtension(pluginOptions, payload)
-}
-```
-
-If you wish to add to the onInit, you must include the **async/await**. We don’t use spread syntax in this case, instead you must await the existing `onInit` before running additional functionality.
-
-In the template, we have stubbed out some addition `onInit` actions that seeds in a document to the `plugin-collection`, you can use this as a base point to add more actions - and if not needed, feel free to delete it.
-
-##### Types.ts
-
-If your plugin has options, you should define and provide types for these options.
-
-```ts
-export type MyPluginConfig = {
-  /**
-   * List of collections to add a custom field
-   */
-  collections?: Partial<Record<CollectionSlug, true>>
-  /**
-   * Disable the plugin
-   */
-  disabled?: boolean
-}
-```
-
-If possible, include JSDoc comments to describe the options and their types. This allows a developer to see details about the options in their editor.
-
-##### Testing
-
-Having a test suite for your plugin is essential to ensure quality and stability. **Vitest** is a fast, modern testing framework that works seamlessly with Vite and supports TypeScript out of the box.
-
-Vitest organizes tests into test suites and cases, similar to other testing frameworks. We recommend creating individual tests based on the expected behavior of your plugin from start to finish.
-
-Writing tests with Vitest is very straightforward, and you can learn more about how it works in the [Vitest documentation.](https://vitest.dev/)
-
-For this template, we stubbed out `int.spec.ts` in the `dev` folder where you can write your tests.
-
-```ts
-describe('Plugin tests', () => {
-  // Create tests to ensure expected behavior from the plugin
-  it('some condition that must be met', () => {
-   // Write your test logic here
-   expect(...)
-  })
-})
-```
-
-## Best practices
-
-With this tutorial and the plugin template, you should have everything you need to start building your own plugin.
-In addition to the setup, here are other best practices aim we follow:
-
-- **Providing an enable / disable option:** For a better user experience, provide a way to disable the plugin without uninstalling it. This is especially important if your plugin adds additional webpack aliases, this will allow you to still let the webpack run to prevent errors.
-- **Include tests in your GitHub CI workflow**: If you’ve configured tests for your package, integrate them into your workflow to run the tests each time you commit to the plugin repository. Learn more about [how to configure tests into your GitHub CI workflow.](https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-nodejs)
-- **Publish your finished plugin to NPM**: The best way to share and allow others to use your plugin once it is complete is to publish an NPM package. This process is straightforward and well documented, find out more [creating and publishing a NPM package here.](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/).
-- **Add payload-plugin topic tag**: Apply the tag **payload-plugin **to your GitHub repository. This will boost the visibility of your plugin and ensure it gets listed with [existing payload plugins](https://github.com/topics/payload-plugin).
-- **Use [Semantic Versioning](https://semver.org/) (SemVar)** - With the SemVar system you release version numbers that reflect the nature of changes (major, minor, patch). Ensure all major versions reference their Payload compatibility.
-
-# Questions
-
-Please contact [Payload](mailto:dev@payloadcms.com) with any questions about using this plugin template.
+MIT
