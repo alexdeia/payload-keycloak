@@ -58,7 +58,7 @@
     "test:int": "vitest run"
   },
   "dependencies": {
-    "jose": "^5.10.0"
+    "jose": "^6.2.12"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
